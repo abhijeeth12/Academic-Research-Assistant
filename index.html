@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Academic Research Assistant</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Academic Research Assistant</h1>
+        
+        <!-- Search Phase -->
+        <div id="searchPhase">
+            <div class="search-box">
+                <textarea id="queryInput" placeholder="Enter your research query..."></textarea>
+                <div class="type-options">
+                    <label><input type="checkbox" name="docType" value="PDF" checked> PDFs</label>
+                    <label><input type="checkbox" name="docType" value="PPT"> PowerPoints</label>
+                    <label><input type="checkbox" name="docType" value="Word"> Word Docs</label>
+                </div>
+                <button onclick="searchDocuments()">Find Documents</button>
+            </div>
+        </div>
+        
+        <!-- Results Phase -->
+        <div id="resultsPhase" style="display:none;">
+            <h2>Found Documents</h2>
+            <div id="documentList"></div>
+            
+            <div class="analysis-controls">
+                <button onclick="analyzeSelected()">Analyze Selected</button>
+                <button onclick="resetSearch()" class="secondary">New Search</button>
+            </div>
+        </div>
+        
+        <!-- Analysis Phase -->
+        <div id="analysisPhase" style="display:none;">
+            <h2>Analysis Results</h2>
+            <div id="analysisResults"></div>
+            <button onclick="backToResults()">Back to Documents</button>
+        </div>
+        
+        <div id="loadingOverlay" style="display:none;">
+            <div class="spinner"></div>
+            <p>Processing...</p>
+        </div>
+    </div>
+
+    <script src="/static/script.js"></script>
+</body>
+</html>
