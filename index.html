@@ -5,45 +5,83 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Academic Research Assistant</title>
     <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
 </head>
 <body>
-    <div class="container">
-        <h1>Academic Research Assistant</h1>
-        
-        <!-- Search Phase -->
-        <div id="searchPhase">
-            <div class="search-box">
-                <textarea id="queryInput" placeholder="Enter your research query..."></textarea>
-                <div class="type-options">
-                    <label><input type="checkbox" name="docType" value="PDF" checked> PDFs</label>
-                    <label><input type="checkbox" name="docType" value="PPT"> PowerPoints</label>
-                    <label><input type="checkbox" name="docType" value="Word"> Word Docs</label>
+    <div class="app-container">
+        <header class="app-header">
+            <h1><i class="fas fa-book-open"></i> Academic Research Assistant</h1>
+        </header>
+
+        <main class="main-content">
+            <!-- Search Phase -->
+            <section class="phase active" id="searchPhase">
+                <div class="phase-card">
+                    <h2><i class="fas fa-search"></i> New Research Query</h2>
+                    <textarea id="queryInput" placeholder="Enter your research question or topic..."></textarea>
+                    
+                    <div class="document-types">
+                        <label class="type-option">
+                            <input type="checkbox" name="docType" value="PDF" checked>
+                            <span class="checkmark"></span>
+                            PDF Documents
+                        </label>
+                        <label class="type-option">
+                            <input type="checkbox" name="docType" value="PPT">
+                            <span class="checkmark"></span>
+                            Presentations
+                        </label>
+                        <label class="type-option">
+                            <input type="checkbox" name="docType" value="Word">
+                            <span class="checkmark"></span>
+                            Word Documents
+                        </label>
+                    </div>
+                    
+                    <button class="primary-btn" onclick="searchDocuments()">
+                        <i class="fas fa-search"></i> Search Documents
+                    </button>
                 </div>
-                <button onclick="searchDocuments()">Find Documents</button>
-            </div>
-        </div>
-        
-        <!-- Results Phase -->
-        <div id="resultsPhase" style="display:none;">
-            <h2>Found Documents</h2>
-            <div id="documentList"></div>
-            
-            <div class="analysis-controls">
-                <button onclick="analyzeSelected()">Analyze Selected</button>
-                <button onclick="resetSearch()" class="secondary">New Search</button>
-            </div>
-        </div>
-        
-        <!-- Analysis Phase -->
-        <div id="analysisPhase" style="display:none;">
-            <h2>Analysis Results</h2>
-            <div id="analysisResults"></div>
-            <button onclick="backToResults()">Back to Documents</button>
-        </div>
-        
-        <div id="loadingOverlay" style="display:none;">
+            </section>
+
+            <!-- Results Phase -->
+            <section class="phase" id="resultsPhase">
+                <div class="phase-card">
+                    <div class="phase-header">
+                        <h2><i class="fas fa-file-alt"></i> Relevant Documents</h2>
+                        <button class="text-btn" onclick="resetSearch()">
+                            <i class="fas fa-undo"></i> New Search
+                        </button>
+                    </div>
+                    
+                    <div id="documentList" class="documents-grid"></div>
+                    
+                    <div class="action-bar">
+                        <button class="primary-btn" onclick="analyzeSelected()">
+                            <i class="fas fa-chart-bar"></i> Analyze Selected 
+                            <span id="selectedCount">0</span>
+                        </button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Analysis Phase -->
+            <section class="phase" id="analysisPhase">
+                <div class="phase-card">
+                    <div class="phase-header">
+                        <h2><i class="fas fa-chart-pie"></i> Analysis Results</h2>
+                        <button class="text-btn" onclick="backToResults()">
+                            <i class="fas fa-arrow-left"></i> Back to Documents
+                        </button>
+                    </div>
+                    <div id="analysisResults" class="analysis-list"></div>
+                </div>
+            </section>
+        </main>
+
+        <div id="loadingOverlay">
             <div class="spinner"></div>
-            <p>Processing...</p>
+            <div class="loading-text">Processing Request...</div>
         </div>
     </div>
 
