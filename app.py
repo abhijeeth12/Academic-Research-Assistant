@@ -13,7 +13,7 @@ import re
 import json
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
-
+from sklearn.feature_extraction.text import TfidfVectorizer
 load_dotenv()
 app = Flask(__name__)
 CORS(app)
@@ -26,7 +26,8 @@ TOP_K = 5
 OLLAMA_API = "http://localhost:11434/api"
 SIMILARITY_THRESHOLD = 0.7
 MAX_SCRAPE_LINKS = 5  # Maximum PDF links to scrape from a single page
-
+HEADING_SIMILARITY_THRESHOLD = 0.65
+MIN_HEADING_LENGTH = 3
 # Initialize models
 embedding_model = SentenceTransformer(EMBEDDING_MODEL)
 
@@ -163,6 +164,46 @@ def scrape_for_pdf_links(url):
     except Exception as e:
         print(f"Error scraping {url}: {e}")
         return []
+# Add heading extraction function
+def extract_headings_and_content(text):
+    """Extract headings and their content using structural patterns"""
+    headings = {}
+    current_heading = "Main Content"
+    content = []
+    
+    # Split text into lines and detect heading patterns
+    for line in text.split('\n'):
+        line = line.strip()
+        if not line:
+            continue
+            
+        # Detect heading patterns
+        is_heading = False
+        if len(line) < 100:  # Headings are typically short
+            # Pattern 1: Title case with colon
+            if line.endswith(':') and line[:-1].istitle():
+                is_heading = True
+            # Pattern 2: Numbered headings (e.g., 1. Introduction)
+            elif re.match(r'^\d+[\.\)]\s+[A-Z]', line):
+                is_heading = True
+            # Pattern 3: All caps heading
+            elif line.isupper() and len(line.split()) < 6:
+                is_heading = True
+            # Pattern 4: Section title followed by newline
+            elif line in ['Abstract', 'Introduction', 'Methodology', 'Results', 'Conclusion']:
+                is_heading = True
+        
+        if is_heading and len(line) > MIN_HEADING_LENGTH:
+            # Save previous section
+            headings[current_heading] = '\n'.join(content)
+            current_heading = line
+            content = []
+        else:
+            content.append(line)
+    
+    # Add final section
+    headings[current_heading] = '\n'.join(content)
+    return {k: v for k, v in headings.items() if v.strip()}
 
 def extract_metadata_from_url(url):
     """Try to extract metadata from the URL/page before downloading"""
@@ -322,7 +363,7 @@ def search_documents_with_keywords(query, selected_types=["PDF"]):
     similar_words = find_similar_words(keywords)
     print(f"Similar words: {similar_words}")
     
-    search_terms = keywords + similar_words
+    search_terms = keywords
     unique_terms = list(set(search_terms))
     
     all_results = []
@@ -462,29 +503,54 @@ def analyze_document():
         except Exception as e:
             return jsonify({"error": f"PDF text extraction failed: {str(e)}"}), 400
 
-        # 3. Process text chunks
-        print("Processing text chunks...")
-        chunks = chunk_text(text)
-        if not chunks:
-            return jsonify({"error": "Failed to create text chunks"}), 400
-
-        # 4. Find relevant chunks
+        # 3. Extract document structure
+        print("Extracting document structure...")
+        heading_content = extract_headings_and_content(text)
+        headings = list(heading_content.keys())
+        
+        # 4. Keyword extraction (original prompt preserved)
         prompt = f"""Analyze this query and extract key terms that should appear in the answer.
 Return ONLY a comma-separated list of 5-7 keywords/phrases.
 
 Query: {query}"""
-
+        
         keyword_string = query_llama(prompt)
         keywords = [k.strip() for k in keyword_string.split(",")] if keyword_string else []
         search_terms = f"{query} {' '.join(keywords)}"
-        relevant_chunks = get_relevant_chunks(search_terms, chunks)
-        print(query)
-        # 5. Generate summary
-        # 5. Generate summary
+        
+        # 5. Try heading-based retrieval first
+        relevant_excerpts = []
+        if headings:
+            print("Attempting heading-based retrieval...")
+            heading_embeddings = embedding_model.encode(headings)
+            search_embedding = embedding_model.encode([search_terms])
+            
+            similarities = cosine_similarity(search_embedding, heading_embeddings)[0]
+            heading_scores = sorted(zip(headings, similarities), 
+                                  key=lambda x: x[1], reverse=True)
+            
+            # Get headings above threshold
+            relevant_headings = [h for h, s in heading_scores 
+                               if s > HEADING_SIMILARITY_THRESHOLD][:3]
+            
+            if relevant_headings:
+                print(f"Found relevant headings: {relevant_headings}")
+                for heading in relevant_headings:
+                    content = heading_content[heading]
+                    relevant_excerpts.append(f"- {content[:300]}")
+
+        # 6. Fallback to chunk-based retrieval if no good headings
+        if not relevant_excerpts:
+            print("Using chunk-based retrieval fallback...")
+            chunks = chunk_text(text)
+            relevant_chunks = get_relevant_chunks(search_terms, chunks)
+            relevant_excerpts = [f"- {chunk[0][:300]}" for chunk in relevant_chunks]
+
+        # 7. Generate summary (original prompt preserved)
         summary_prompt = f"""USER QUERY: {query}
 
 RELEVANT EXCERPTS:
-{chr(10).join([f"- {chunk[:300]}" for chunk in relevant_chunks])}
+{chr(10).join(relevant_excerpts)}
 
 RESPONSE INSTRUCTIONS:
 - Directly answer the query
@@ -499,7 +565,7 @@ RESPONSE INSTRUCTIONS:
         summary = summary.replace('```', '').strip()
         summary = re.sub(r'\n{3,}', '\n\n', summary)
 
-        # 6. Extract metadata
+        # 8. Extract metadata
         metadata = {"title": "", "author": "", "year": ""}
         try:
             metadata.update(extract_metadata_from_text(text[:5000]))
@@ -512,9 +578,9 @@ RESPONSE INSTRUCTIONS:
             "metadata": metadata,
             "query": query,
             "stats": {
-                "total_chunks": len(chunks),
-                "relevant_chunks": len(relevant_chunks),
-                "top_relevance": float(relevant_chunks[0][1]) if relevant_chunks else 0
+                "total_chunks": len(heading_content) if relevant_excerpts else len(chunks),
+                "relevant_chunks": len(relevant_excerpts),
+                "top_relevance": float(max(similarities)) if headings else float(relevant_chunks[0][1]) if relevant_chunks else 0
             }
         })
 
