@@ -40,7 +40,11 @@ def clean_json_response(text):
 
 def query_llama(prompt, model="llama3", expect_json=False):
     """Query LLama model with better error handling and JSON support"""
-    print(f"\nQuerying LLama with prompt:\n{prompt[:200]}...")
+    # Improved print to show query position
+    print(f"\nQuerying LLama with prompt:")
+    print(f"First 150 chars: {prompt[:150]}")
+    print(f"Last 150 chars: {prompt[-150:]}" if len(prompt) > 300 else "")
+    # Rest of the function remains the same
     
     try:
         full_response = ""
@@ -84,7 +88,7 @@ def query_llama(prompt, model="llama3", expect_json=False):
 
 def extract_keywords(query):
     """Extract main keywords from query using LLM"""
-    prompt = f"""Extract the most important 1-3 keywords from this query that represent its core meaning. 
+    prompt = f"""Extract or generate the most important 1-3 keywords from this query that represent its core meaning. 
     Return ONLY a JSON array of strings with the keywords.
     
     Example: "What is a covalent bond?" → ["covalent bond"]
@@ -278,8 +282,7 @@ def generate_summary(query, chunks):
 
 def rank_documents(query, documents):
     """Rank documents using semantic similarity with embeddings"""
-    if len(documents) <= 1:
-        return documents
+    return documents
         
     print(f"\nRanking {len(documents)} documents for query: {query}")
     
@@ -326,7 +329,7 @@ def search_documents_with_keywords(query, selected_types=["PDF"]):
     
     for term in unique_terms:
         search_query = f"{term} PDF"
-        
+        print(f"Search query: {search_query}")
         try:
             search = GoogleSearch({
                 "q": search_query, 
@@ -435,7 +438,6 @@ def analyze_document():
 
     url = data.get('url', '').strip()
     query = data.get('query', '').strip()
-
     if not url:
         return jsonify({"error": "URL cannot be empty"}), 400
 
@@ -454,14 +456,11 @@ def analyze_document():
         # 2. Extract text from PDF
         print("Extracting text from PDF...")
         try:
-            with io.BytesIO(response.content) as f:
-                reader = PyPDF2.PdfReader(f)
-                text = " ".join(page.extract_text() for page in reader.pages if page.extract_text())
+            text = extract_text_from_pdf(url)
+            if not text:
+                return jsonify({"error": "No text content found in document"}), 400
         except Exception as e:
             return jsonify({"error": f"PDF text extraction failed: {str(e)}"}), 400
-
-        if not text:
-            return jsonify({"error": "No text content found in document"}), 400
 
         # 3. Process text chunks
         print("Processing text chunks...")
@@ -470,45 +469,42 @@ def analyze_document():
             return jsonify({"error": "Failed to create text chunks"}), 400
 
         # 4. Find relevant chunks
-        relevant_chunks = get_relevant_chunks(query, chunks)
-        if not relevant_chunks:
-            return jsonify({"error": "No relevant content found for the query"}), 404
+        prompt = f"""Analyze this query and extract key terms that should appear in the answer.
+Return ONLY a comma-separated list of 5-7 keywords/phrases.
 
+Query: {query}"""
+
+        keyword_string = query_llama(prompt)
+        keywords = [k.strip() for k in keyword_string.split(",")] if keyword_string else []
+        search_terms = f"{query} {' '.join(keywords)}"
+        relevant_chunks = get_relevant_chunks(search_terms, chunks)
+        print(query)
         # 5. Generate summary
-        print("Generating summary...")
-        chunks_context = "\n\n".join(
-            f"CHUNK {i+1} (Relevance: {score:.2f}):\n{chunk[:1000]}"
-            for i, (chunk, score) in enumerate(relevant_chunks)
-        )
+        # 5. Generate summary
+        summary_prompt = f"""USER QUERY: {query}
 
-        prompt = f"""USER QUERY: {query}
+RELEVANT EXCERPTS:
+{chr(10).join([f"- {chunk[:300]}" for chunk in relevant_chunks])}
 
-DOCUMENT EXCERPTS:
-{chunks_context}
+RESPONSE INSTRUCTIONS:
+- Directly answer the query
+- Use bullet points
+- Include specific details"""
 
-INSTRUCTIONS:
-1. Focus on directly answering: "{query}"
-2. Use only the provided excerpts
-3. Include key points and supporting details
-4. Maintain original meaning accurately
-5. Use clear, academic language
-
-SUMMARY:"""
-
-        summary = query_llama(prompt)
+        summary = query_llama(summary_prompt)
         if not summary:
             return jsonify({"error": "Failed to generate summary"}), 500
 
-        # Clean summary
+        # Clean and format summary
         summary = summary.replace('```', '').strip()
         summary = re.sub(r'\n{3,}', '\n\n', summary)
 
         # 6. Extract metadata
         metadata = {"title": "", "author": "", "year": ""}
         try:
-            metadata.update(extract_metadata_from_text(text[:5000]))  # Only use first part for metadata
+            metadata.update(extract_metadata_from_text(text[:5000]))
         except Exception as e:
-            print(f"Metadata extraction warning: {e}")
+            print(f"Metadata extraction warning: {str(e)}")
 
         return jsonify({
             "success": True,
@@ -523,7 +519,9 @@ SUMMARY:"""
         })
 
     except Exception as e:
-        print(f"Unexpected error: {str(e)}", exc_info=True)
+        import traceback
+        error_trace = traceback.format_exc()
+        print(f"Unexpected error: {str(e)}\n{error_trace}")
         return jsonify({"error": "Internal server error"}), 500
 
 if __name__ == "__main__":
