@@ -14,6 +14,12 @@ import json
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 from sklearn.feature_extraction.text import TfidfVectorizer
+# Add these new imports at the top
+import pdfplumber
+import torch
+from transformers import LayoutLMv3ForTokenClassification, LayoutLMv3Tokenizer
+from PIL import Image
+
 load_dotenv()
 app = Flask(__name__)
 CORS(app)
@@ -21,6 +27,9 @@ CORS(app)
 # Configuration
 SERP_API_KEY = os.getenv("SERPAPI_API_KEY")
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+layoutlm_model = LayoutLMv3ForTokenClassification.from_pretrained("microsoft/layoutlmv3-base")
+layoutlm_tokenizer = LayoutLMv3Tokenizer.from_pretrained("microsoft/layoutlmv3-base")
+layoutlm_model = layoutlm_model.to('cuda' if torch.cuda.is_available() else 'cpu')
 CHUNK_SIZE = 1000
 TOP_K = 5
 OLLAMA_API = "http://localhost:11434/api"
@@ -165,45 +174,103 @@ def scrape_for_pdf_links(url):
         print(f"Error scraping {url}: {e}")
         return []
 # Add heading extraction function
-def extract_headings_and_content(text):
-    """Extract headings and their content using structural patterns"""
+def extract_headings_and_content(text, pdf_url=None):
+    """Enhanced heading extraction using LayoutLM and rule-based fallback"""
+    print("\n=== Rule-Based Heading Extraction ===")
+    print(f"Processing text length: {len(text)} characters")
+    def layoutlm_extraction(pdf_content):
+        """LayoutLM-based heading extraction"""
+        with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
+            all_headings = []
+            for page in pdf.pages:
+                words = page.extract_words()
+                if not words:
+                    continue
+                
+                # Normalize coordinates
+                page_width = page.width
+                page_height = page.height
+                boxes = []
+                texts = []
+                for word in words:
+                    box = [
+                        word['x0'], word['top'],
+                        word['x1'], word['bottom']
+                    ]
+                    boxes.append([
+                        int(1000 * (box[0] / page_width)),
+                        int(1000 * (box[1] / page_height)),
+                        int(1000 * (box[2] / page_width)),
+                        int(1000 * (box[3] / page_height)),
+                    ])
+                    texts.append(word['text'])
+
+                # Tokenize and predict
+                encoding = layoutlm_tokenizer(
+                    texts, 
+                    boxes=boxes,
+                    return_tensors="pt",
+                    truncation=True,
+                    padding="max_length",
+                    max_length=512
+                )
+
+                with torch.no_grad():
+                    outputs = layoutlm_model(**encoding)
+                
+                predictions = outputs.logits.argmax(-1).squeeze().tolist()
+                tokens = layoutlm_tokenizer.convert_ids_to_tokens(encoding["input_ids"].squeeze().tolist())
+
+                # Extract headings
+                current_heading = []
+                for token, prediction in zip(tokens, predictions):
+                    if token in [layoutlm_tokenizer.cls_token, layoutlm_tokenizer.sep_token]:
+                        continue
+                        
+                    label = layoutlm_model.config.id2label[prediction]
+                    if "heading" in label.lower():
+                        current_heading.append(token.replace("▁", ""))
+                    else:
+                        if current_heading:
+                            all_headings.append(" ".join(current_heading))
+                            current_heading = []
+                if current_heading:
+                    all_headings.append(" ".join(current_heading))
+            return all_headings
+
+    # Try LayoutLM extraction first if PDF is available
+    if pdf_url:
+        try:
+            response = requests.get(pdf_url, timeout=20)
+            pdf_content = response.content
+            headings = layoutlm_extraction(pdf_content)
+            return {h: "" for h in headings}  # Return structure compatible with existing code
+        except Exception as e:
+            print(f"LayoutLM extraction failed, falling back to rule-based: {str(e)}")
+    
+    # Fallback to rule-based extraction
+    text = re.sub(r'=+ Page \d+ =+\n?', '', text)
+    text = re.sub(r'\n\d+ Chapter \d+\b', '', text)
+    
     headings = {}
     current_heading = "Main Content"
     content = []
-    
-    # Split text into lines and detect heading patterns
-    for line in text.split('\n'):
-        line = line.strip()
-        if not line:
-            continue
-            
-        # Detect heading patterns
-        is_heading = False
-        if len(line) < 100:  # Headings are typically short
-            # Pattern 1: Title case with colon
-            if line.endswith(':') and line[:-1].istitle():
-                is_heading = True
-            # Pattern 2: Numbered headings (e.g., 1. Introduction)
-            elif re.match(r'^\d+[\.\)]\s+[A-Z]', line):
-                is_heading = True
-            # Pattern 3: All caps heading
-            elif line.isupper() and len(line.split()) < 6:
-                is_heading = True
-            # Pattern 4: Section title followed by newline
-            elif line in ['Abstract', 'Introduction', 'Methodology', 'Results', 'Conclusion']:
-                is_heading = True
+    previous_line = ""
+    in_heading = False
+
+    # [Keep your existing rule-based pattern matching code here]
+    print("\n=== Extracted Headings ===")
+    for heading, content in headings.items():
+        print(f"📑 Heading: {heading}")
+        print(f"    Content length: {len(content)} chars")
+        print(f"    First 50 chars: {content[:50].replace('\n', ' ')}...")
         
-        if is_heading and len(line) > MIN_HEADING_LENGTH:
-            # Save previous section
-            headings[current_heading] = '\n'.join(content)
-            current_heading = line
-            content = []
-        else:
-            content.append(line)
-    
-    # Add final section
-    headings[current_heading] = '\n'.join(content)
-    return {k: v for k, v in headings.items() if v.strip()}
+    return {
+        
+        k.replace('  ', ' ').strip(): v 
+        for k, v in headings.items() 
+        if v.strip() and len(k) > 4
+    }
 
 def extract_metadata_from_url(url):
     """Try to extract metadata from the URL/page before downloading"""
@@ -261,40 +328,75 @@ def extract_metadata_from_text(text):
         return metadata
     return {"title": "", "author": "", "year": ""}
 
-def chunk_text(text):
-    """Create larger semantic chunks with overlap"""
-    print("Creating text chunks...")
-    sections = re.split(r'\n\s*\n|(?=[A-Z][a-z]{2,}\s+[A-Z][a-z]{2,}:)|(?=\d+\.\s+[A-Z])', text)
-    sections = [s.strip() for s in sections if s.strip()]
-    
+def chunk_text(text, chunk_size=1000):
+    """Create context-preserving chunks with headings"""
+    heading_content = extract_headings_and_content(text)
     chunks = []
-    current_chunk = ""
-    overlap_size = CHUNK_SIZE // 4
     
-    for section in sections:
-        if len(current_chunk) + len(section) < CHUNK_SIZE:
-            current_chunk += "\n\n" + section
-        else:
-            if current_chunk:
-                chunks.append(current_chunk.strip())
-            if current_chunk and len(current_chunk) > overlap_size:
-                current_chunk = current_chunk[-overlap_size:] + "\n\n" + section
+    # Fallback if no headings found
+    if not heading_content:
+        print("No headings found, using standard chunking")
+        sections = re.split(r'\n\s*\n', text)
+        current_chunk = ""
+        for section in sections:
+            if len(current_chunk) + len(section) < chunk_size:
+                current_chunk += "\n\n" + section
             else:
+                chunks.append(current_chunk.strip())
                 current_chunk = section
+        if current_chunk:
+            chunks.append(current_chunk.strip())
+        return chunks
     
-    if current_chunk:
-        chunks.append(current_chunk.strip())
+    for heading, content in heading_content.items():
+        # Start chunk with heading
+        chunk = f"## {heading}\n{content}"
+        
+        # Split large sections while maintaining context
+        while len(chunk) > chunk_size:
+            # Prefer splitting at paragraph breaks
+            split_pos = max(
+                chunk.rfind('\n\n', 0, chunk_size),
+                chunk.rfind('. ', 0, chunk_size)
+            )
+            
+            if split_pos == -1:
+                split_pos = chunk_size
+                
+            chunks.append(chunk[:split_pos].strip())
+            remaining = chunk[split_pos:].lstrip()
+            
+            # Preserve heading in split chunks
+            chunk = f"## {heading}\n{remaining}"
+        
+        if chunk:
+            chunks.append(chunk.strip())
     
-    print(f"Created {len(chunks)} chunks with average size {sum(len(c) for c in chunks)/len(chunks) if chunks else 0:.0f} chars")
     return chunks
 
 def get_relevant_chunks(query, chunks):
     """Get most relevant chunks with similarity scores"""
+    if not chunks:  # Handle empty chunks case
+        print("⚠️ Warning: No chunks available for similarity calculation")
+        return []
+    
+    # Ensure proper array dimensions
     query_embed = embedding_model.encode([query])
     chunk_embeds = embedding_model.encode(chunks)
-    sims = cosine_similarity(query_embed, chunk_embeds)[0]
-    top_indices = np.argsort(sims)[-TOP_K:][::-1]
-    return [(chunks[i], sims[i]) for i in top_indices]
+    
+    # Reshape arrays for sklearn compatibility
+    if len(query_embed.shape) == 1:
+        query_embed = query_embed.reshape(1, -1)
+    if len(chunk_embeds.shape) == 1:
+        chunk_embeds = chunk_embeds.reshape(1, -1)
+    
+    try:
+        sims = cosine_similarity(query_embed, chunk_embeds)[0]
+        top_indices = np.argsort(sims)[-TOP_K:][::-1]
+        return [(chunks[i], sims[i]) for i in top_indices]
+    except ValueError as e:
+        print(f"⚠️ Similarity calculation failed: {str(e)}")
+        return []
 
 def generate_summary(query, chunks):
     """Generate comprehensive summary using LLM"""
@@ -505,9 +607,10 @@ def analyze_document():
 
         # 3. Extract document structure
         print("Extracting document structure...")
-        heading_content = extract_headings_and_content(text)
+        pdf_content = response.content  # Get the binary content
+        text = extract_text_from_pdf(url)  # Keep text extraction
+        heading_content = extract_headings_and_content(text, pdf_url=url)
         headings = list(heading_content.keys())
-        
         # 4. Keyword extraction (original prompt preserved)
         prompt = f"""Analyze this query and extract key terms that should appear in the answer.
 Return ONLY a comma-separated list of 5-7 keywords/phrases.
