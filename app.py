@@ -19,6 +19,21 @@ import pdfplumber
 import torch
 from transformers import LayoutLMv3ForTokenClassification, LayoutLMv3Tokenizer
 from PIL import Image
+import logging
+import pdfplumber
+import re
+import io
+import requests
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin
+from sklearn.feature_extraction.text import TfidfVectorizer 
+from markupsafe import Markup
+import pdfplumber
+import torch
+from transformers import LayoutLMv3ForTokenClassification, LayoutLMv3Tokenizer
+
+# Suppress pypdf CropBox warnings
+logging.getLogger("pypdf").setLevel(logging.ERROR)
 
 load_dotenv()
 app = Flask(__name__)
@@ -89,6 +104,12 @@ def query_llama(prompt, model="llama3", expect_json=False):
             except Exception as e:
                 print(f"JSON parsing failed: {e}")
                 return [0, 1, 2]
+        if expect_json:
+            try:
+                return json.loads(result)
+            except json.JSONDecodeError:
+                print("JSON parsing failed, returning empty dict")
+                return {}
         return result
     except Exception as e:
         print(f"LLama query failed: {e}")
@@ -174,103 +195,52 @@ def scrape_for_pdf_links(url):
         print(f"Error scraping {url}: {e}")
         return []
 # Add heading extraction function
-def extract_headings_and_content(text, pdf_url=None):
-    """Enhanced heading extraction using LayoutLM and rule-based fallback"""
-    print("\n=== Rule-Based Heading Extraction ===")
-    print(f"Processing text length: {len(text)} characters")
-    def layoutlm_extraction(pdf_content):
-        """LayoutLM-based heading extraction"""
-        with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
-            all_headings = []
-            for page in pdf.pages:
-                words = page.extract_words()
-                if not words:
-                    continue
-                
-                # Normalize coordinates
-                page_width = page.width
-                page_height = page.height
-                boxes = []
-                texts = []
-                for word in words:
-                    box = [
-                        word['x0'], word['top'],
-                        word['x1'], word['bottom']
-                    ]
-                    boxes.append([
-                        int(1000 * (box[0] / page_width)),
-                        int(1000 * (box[1] / page_height)),
-                        int(1000 * (box[2] / page_width)),
-                        int(1000 * (box[3] / page_height)),
-                    ])
-                    texts.append(word['text'])
+def extract_headings_and_content(pdf_url=None, raw_text=None, heading_pattern=r"^[A-Z][A-Za-z0-9 ]{1,50}$"):
+    """
+    Extracts headings and their content from a PDF using pdfplumber.
+    
+    Args:
+        pdf_url (str): URL of the PDF to download and process.
+        raw_text (str): Fallback raw text to process if pdf_url is None.
+        heading_pattern (str): Regex for identifying heading lines.
+    
+    Returns:
+        dict: Mapping of heading -> content (string).
+    """
+    chunks = {}
+    current_heading = None
+    current_content = []
 
-                # Tokenize and predict
-                encoding = layoutlm_tokenizer(
-                    texts, 
-                    boxes=boxes,
-                    return_tensors="pt",
-                    truncation=True,
-                    padding="max_length",
-                    max_length=512
-                )
-
-                with torch.no_grad():
-                    outputs = layoutlm_model(**encoding)
-                
-                predictions = outputs.logits.argmax(-1).squeeze().tolist()
-                tokens = layoutlm_tokenizer.convert_ids_to_tokens(encoding["input_ids"].squeeze().tolist())
-
-                # Extract headings
-                current_heading = []
-                for token, prediction in zip(tokens, predictions):
-                    if token in [layoutlm_tokenizer.cls_token, layoutlm_tokenizer.sep_token]:
-                        continue
-                        
-                    label = layoutlm_model.config.id2label[prediction]
-                    if "heading" in label.lower():
-                        current_heading.append(token.replace("▁", ""))
-                    else:
-                        if current_heading:
-                            all_headings.append(" ".join(current_heading))
-                            current_heading = []
-                if current_heading:
-                    all_headings.append(" ".join(current_heading))
-            return all_headings
-
-    # Try LayoutLM extraction first if PDF is available
     if pdf_url:
-        try:
-            response = requests.get(pdf_url, timeout=20)
-            pdf_content = response.content
-            headings = layoutlm_extraction(pdf_content)
-            return {h: "" for h in headings}  # Return structure compatible with existing code
-        except Exception as e:
-            print(f"LayoutLM extraction failed, falling back to rule-based: {str(e)}")
-    
-    # Fallback to rule-based extraction
-    text = re.sub(r'=+ Page \d+ =+\n?', '', text)
-    text = re.sub(r'\n\d+ Chapter \d+\b', '', text)
-    
-    headings = {}
-    current_heading = "Main Content"
-    content = []
-    previous_line = ""
-    in_heading = False
+        # Download PDF bytes
+        response = requests.get(pdf_url, timeout=20)
+        pdf_stream = io.BytesIO(response.content)
+        pdf = pdfplumber.open(pdf_stream)
+    else:
+        # Simulate a single-page pdfplumber object from raw_text
+        class FakePage: 
+            def __init__(self, text): self._text = text
+            @property
+            def extract_text(self): return lambda: self._text
+        pdf = [FakePage(raw_text or "")]  # one-page list
 
-    # [Keep your existing rule-based pattern matching code here]
-    print("\n=== Extracted Headings ===")
-    for heading, content in headings.items():
-        print(f"📑 Heading: {heading}")
-        print(f"    Content length: {len(content)} chars")
-        print(f"    First 50 chars: {content[:50].replace('\n', ' ')}...")
-        
-    return {
-        
-        k.replace('  ', ' ').strip(): v 
-        for k, v in headings.items() 
-        if v.strip() and len(k) > 4
-    }
+    for page in (pdf.pages if hasattr(pdf, "pages") else pdf):
+        text = page.extract_text() or ""
+        for line in text.split("\n"):
+            line_stripped = line.strip()
+            if re.match(heading_pattern, line_stripped):
+                # Save previous heading
+                if current_heading:
+                    chunks[current_heading] = "\n".join(current_content).strip()
+                current_heading = line_stripped
+                current_content = []
+            else:
+                current_content.append(line)
+    # Append the last heading
+    if current_heading:
+        chunks[current_heading] = "\n".join(current_content).strip()
+    return chunks
+
 
 def extract_metadata_from_url(url):
     """Try to extract metadata from the URL/page before downloading"""
@@ -349,29 +319,17 @@ def chunk_text(text, chunk_size=1000):
         return chunks
     
     for heading, content in heading_content.items():
-        # Start chunk with heading
         chunk = f"## {heading}\n{content}"
-        
-        # Split large sections while maintaining context
         while len(chunk) > chunk_size:
-            # Prefer splitting at paragraph breaks
             split_pos = max(
                 chunk.rfind('\n\n', 0, chunk_size),
                 chunk.rfind('. ', 0, chunk_size)
             )
-            
             if split_pos == -1:
                 split_pos = chunk_size
-                
             chunks.append(chunk[:split_pos].strip())
-            remaining = chunk[split_pos:].lstrip()
-            
-            # Preserve heading in split chunks
-            chunk = f"## {heading}\n{remaining}"
-        
-        if chunk:
-            chunks.append(chunk.strip())
-    
+            chunk = f"## {heading}\n" + chunk[split_pos:].lstrip()
+        chunks.append(chunk.strip())
     return chunks
 
 def get_relevant_chunks(query, chunks):
@@ -422,6 +380,61 @@ def generate_summary(query, chunks):
     
     print("Summary generated successfully")
     return summary
+
+def preprocess_summary(summary_text: str, title: str, source_url: str) -> str:
+    """
+    Turn raw summary_text into the HTML structure you showed:
+      - <h2>Analysis Results</h2>
+      - <h3>{title}</h3>
+      - first **…** block as bold question
+      - remaining text as paragraphs and <ul>/<li>
+      - View Source Document link
+    """
+    # 1. Escape the LLM output
+    summary = Markup.escape(summary_text)
+
+    # 2. Extract first **…** question
+    m = re.match(r'\s*\*\*(?P<q>[^*]+)\*\*\s*(?P<rest>.+)', summary, flags=re.S)
+    if m:
+        question, rest = m.group('q'), m.group('rest')
+    else:
+        question, rest = None, summary
+
+    # 3. Convert remaining **…** → <strong>…</strong>
+    rest = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', rest)
+
+    # 4. Wrap "- " lines in <ul>
+    lines = rest.splitlines()
+    html_body, in_ul = [], False
+    for line in lines:
+        if line.strip().startswith('- '):
+            if not in_ul:
+                html_body.append('<ul>')
+                in_ul = True
+            html_body.append(f'  <li>{line.strip()[2:].strip()}</li>')
+        else:
+            if in_ul:
+                html_body.append('</ul>')
+                in_ul = False
+            if line.strip():
+                html_body.append(f'<p>{line.strip()}</p>')
+    if in_ul:
+        html_body.append('</ul>')
+
+    # 5. Assemble final HTML
+    parts = [
+        '<div class="analysis-results">',
+        '  <h2>Analysis Results</h2>',
+    ]
+    if title:
+        parts.append(f'  <h3>{Markup.escape(title)}</h3>')
+    if question:
+        parts.append(f'  <p><strong>{Markup.escape(question)}</strong></p>')
+    parts += [f'  {ln}' for ln in html_body]
+    parts.append(f'  <p><a href="{Markup.escape(source_url)}" target="_blank">View Source Document</a></p>')
+    parts.append('</div>')
+
+    return '\n'.join(parts)
 
 def rank_documents(query, documents):
     """Rank documents using semantic similarity with embeddings"""
@@ -609,7 +622,7 @@ def analyze_document():
         print("Extracting document structure...")
         pdf_content = response.content  # Get the binary content
         text = extract_text_from_pdf(url)  # Keep text extraction
-        heading_content = extract_headings_and_content(text, pdf_url=url)
+        heading_content = extract_headings_and_content(pdf_url=url, raw_text=text)
         headings = list(heading_content.keys())
         # 4. Keyword extraction (original prompt preserved)
         prompt = f"""Analyze this query and extract key terms that should appear in the answer.
@@ -645,7 +658,7 @@ Query: {query}"""
         # 6. Fallback to chunk-based retrieval if no good headings
         if not relevant_excerpts:
             print("Using chunk-based retrieval fallback...")
-            chunks = chunk_text(text)
+            chunks = chunk_text(text, pdf_url=url)
             relevant_chunks = get_relevant_chunks(search_terms, chunks)
             relevant_excerpts = [f"- {chunk[0][:300]}" for chunk in relevant_chunks]
 
@@ -655,10 +668,7 @@ Query: {query}"""
 RELEVANT EXCERPTS:
 {chr(10).join(relevant_excerpts)}
 
-RESPONSE INSTRUCTIONS:
-- Directly answer the query
-- Use bullet points
-- Include specific details"""
+properly format excerpts length of 100-200 words if possible and skip any introduction part, your response is directly going to be displayed on my website"""
 
         summary = query_llama(summary_prompt)
         if not summary:
@@ -674,6 +684,28 @@ RESPONSE INSTRUCTIONS:
             metadata.update(extract_metadata_from_text(text[:5000]))
         except Exception as e:
             print(f"Metadata extraction warning: {str(e)}")
+                 # … same as before …
+
+        # Clean and format summary
+        summary = summary.replace('```', '').strip()
+        summary = re.sub(r'\n{3,}', '\n\n', summary)
+        # Clean raw markdown
+        summary = summary.replace('```', '').strip()
+        summary = re.sub(r'\n{3,}', '\n\n', summary)
+
+     # 8. Extract metadata
+        metadata = {"title": "", "author": "", "year": ""}
+        try:
+            metadata.update(extract_metadata_from_text(text[:5000]))
+        except Exception as e:
+            print(f"Metadata extraction warning: {str(e)}")
+
+        # 9. Transform the cleaned summary into your HTML layout
+        formatted_html = preprocess_summary(
+            summary_text=summary,
+            title=metadata.get("title", ""),
+            source_url=url
+        )
 
         return jsonify({
             "success": True,
