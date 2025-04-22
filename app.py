@@ -14,21 +14,11 @@ import json
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 from sklearn.feature_extraction.text import TfidfVectorizer
-# Add these new imports at the top
-import pdfplumber
 import torch
 from PIL import Image
 import logging
 import pdfplumber
-import re
-import io
-import requests
-from bs4 import BeautifulSoup
-from urllib.parse import urljoin
-from sklearn.feature_extraction.text import TfidfVectorizer 
 from markupsafe import Markup
-import pdfplumber
-import torch
 
 # Suppress pypdf CropBox warnings
 logging.getLogger("pypdf").setLevel(logging.ERROR)
@@ -114,12 +104,13 @@ def query_llama(prompt, model="llama3", expect_json=False):
 
 def extract_keywords(query):
     """Extract main keywords from query using LLM"""
-    prompt = f"""Extract or generate the most important 1-3 keywords from this query that represent its core meaning. 
-    Return ONLY a JSON array of strings with the keywords.
-    
-    Example: "What is a covalent bond?" → ["covalent bond"]
-    Example: "Explain machine learning algorithms" → ["machine learning", "algorithms"]
-    
+    prompt = f"""Extract or generate the most important 1-3 keywords from this query that can be used to find query related documents. 
+    **Return ONLY a JSON array of strings with the keywords.(Very important)**
+    Add things like PDF or Research Papers or article, etc.. according to query.
+    Things like this should not be printed : Here are the most important 1-3 keywords extracted from your query: as your text is directly stored, giving response in this format result in errors
+    Example: "What is a covalent bond?" → ["covalent bond pdf","Chemical Bonding PDF"]
+    Example: "I want to dive deeper in machine learning algorithms" → ["machine learning research paper", "algorithms pdf"]
+    **Return ONLY a JSON array of strings with the keywords.(Very important)**
     Query: {query}"""
     
     keywords = query_llama(prompt, expect_json=True)
@@ -350,32 +341,6 @@ def get_relevant_chunks(query, chunks):
     except ValueError as e:
         print(f"⚠️ Similarity calculation failed: {str(e)}")
         return []
-
-def generate_summary(query, chunks):
-    """Generate comprehensive summary using LLM"""
-    print(f"Generating summary for query: {query} using {len(chunks)} chunks")
-    
-    chunks.sort(key=lambda x: x[1], reverse=True)
-    top_chunks = chunks[:5]
-    
-    context = ""
-    for i, (chunk, score) in enumerate(top_chunks):
-        context += f"Chunk {i+1} (score {score:.2f}): {chunk[:1000]}\n"
-    
-    prompt = f"Generate a comprehensive and detailed summary of the following text to answer '{query}'. Include key points, important details, and relevant examples. TEXT: {context}"
-    
-    print("Querying LLama for summary...")
-    summary = query_llama(prompt)
-    
-    if not summary:
-        return "Sorry, I couldn't generate a summary. Please try again."
-    
-    summary = summary.replace('```', '').strip()
-    summary = re.sub(r'\n{3,}', '\n\n', summary)
-    
-    print("Summary generated successfully")
-    return summary
-
 def preprocess_summary(summary_text: str, title: str, source_url: str) -> str:
     """
     Turn raw summary_text into the HTML structure you showed:
@@ -615,7 +580,6 @@ def analyze_document():
 
         # 3. Extract document structure
         print("Extracting document structure...")
-        pdf_content = response.content  # Get the binary content
         text = extract_text_from_pdf(url)  # Keep text extraction
         heading_content = extract_headings_and_content(pdf_url=url, raw_text=text)
         headings = list(heading_content.keys())
@@ -673,40 +637,12 @@ keep in mind that the response you are going to give will be directly displayed 
         # Clean and format summary
         summary = summary.replace('```', '').strip()
         summary = re.sub(r'\n{3,}', '\n\n', summary)
-
-        # 8. Extract metadata
-        metadata = {"title": "", "author": "", "year": ""}
-        try:
-            metadata.update(extract_metadata_from_text(text[:5000]))
-        except Exception as e:
-            print(f"Metadata extraction warning: {str(e)}")
-                 # … same as before …
-
-        # Clean and format summary
-        summary = summary.replace('```', '').strip()
-        summary = re.sub(r'\n{3,}', '\n\n', summary)
         # Clean raw markdown
         summary = summary.replace('```', '').strip()
         summary = re.sub(r'\n{3,}', '\n\n', summary)
-
-     # 8. Extract metadata
-        metadata = {"title": "", "author": "", "year": ""}
-        try:
-            metadata.update(extract_metadata_from_text(text[:5000]))
-        except Exception as e:
-            print(f"Metadata extraction warning: {str(e)}")
-
-        # 9. Transform the cleaned summary into your HTML layout
-        formatted_html = preprocess_summary(
-            summary_text=summary,
-            title=metadata.get("title", ""),
-            source_url=url
-        )
-
         return jsonify({
             "success": True,
             "summary": summary,
-            "metadata": metadata,
             "query": query,
             "stats": {
                 "total_chunks": len(heading_content) if relevant_excerpts else len(chunks),
