@@ -104,14 +104,23 @@ def query_llama(prompt, model="llama3", expect_json=False):
 
 def extract_keywords(query):
     """Extract main keywords from query using LLM"""
-    prompt = f"""Extract or generate the most important 1-3 keywords from this query that can be used to find query related documents. 
-    **Return ONLY a JSON array of strings with the keywords.(Very important)**
-    Add things like PDF or Research Papers or article, etc.. according to query.
-    Things like this should not be printed : Here are the most important 1-3 keywords extracted from your query: as your text is directly stored, giving response in this format result in errors
-    Example: "What is a covalent bond?" → ["covalent bond pdf","Chemical Bonding PDF"]
-    Example: "I want to dive deeper in machine learning algorithms" → ["machine learning research paper", "algorithms pdf"]
-    **Return ONLY a JSON array of strings with the keywords.(Very important)**
-    Query: {query}"""
+    prompt = f"""
+Extract or generate the most important 1-3 keywords from this query that can be used to find query-related documents.
+
+**Return ONLY a JSON array of strings with the keywords. (Very important)** 
+
+Avoid returning explanations or phrases like:  
+"Here are the most important 1-3 keywords extracted from your query".
+
+**Examples:**  
+- "What is a covalent bond?" → ["covalent bond", "chemical bonding"]  
+- "I want to dive deeper in machine learning algorithms" → ["machine learning", "algorithms"]
+
+**Return ONLY a JSON array of strings with the keywords. (Very important)**
+
+Query: {query}
+
+"""
     
     keywords = query_llama(prompt, expect_json=True)
     if isinstance(keywords, list) and len(keywords) > 0:
