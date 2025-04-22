@@ -17,7 +17,6 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 # Add these new imports at the top
 import pdfplumber
 import torch
-from transformers import LayoutLMv3ForTokenClassification, LayoutLMv3Tokenizer
 from PIL import Image
 import logging
 import pdfplumber
@@ -30,7 +29,6 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from markupsafe import Markup
 import pdfplumber
 import torch
-from transformers import LayoutLMv3ForTokenClassification, LayoutLMv3Tokenizer
 
 # Suppress pypdf CropBox warnings
 logging.getLogger("pypdf").setLevel(logging.ERROR)
@@ -42,9 +40,6 @@ CORS(app)
 # Configuration
 SERP_API_KEY = os.getenv("SERPAPI_API_KEY")
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
-layoutlm_model = LayoutLMv3ForTokenClassification.from_pretrained("microsoft/layoutlmv3-base")
-layoutlm_tokenizer = LayoutLMv3Tokenizer.from_pretrained("microsoft/layoutlmv3-base")
-layoutlm_model = layoutlm_model.to('cuda' if torch.cuda.is_available() else 'cpu')
 CHUNK_SIZE = 1000
 TOP_K = 5
 OLLAMA_API = "http://localhost:11434/api"
@@ -658,7 +653,7 @@ Query: {query}"""
         # 6. Fallback to chunk-based retrieval if no good headings
         if not relevant_excerpts:
             print("Using chunk-based retrieval fallback...")
-            chunks = chunk_text(text, pdf_url=url)
+            chunks = chunk_text(text)
             relevant_chunks = get_relevant_chunks(search_terms, chunks)
             relevant_excerpts = [f"- {chunk[0][:300]}" for chunk in relevant_chunks]
 
@@ -668,7 +663,8 @@ Query: {query}"""
 RELEVANT EXCERPTS:
 {chr(10).join(relevant_excerpts)}
 
-properly format excerpts length of 100-200 words if possible and skip any introduction part, your response is directly going to be displayed on my website"""
+properly format excerpts length of 100-200 words if possible and skip any introduction part, your response is directly going to be displayed on my website
+keep in mind that the response you are going to give will be directly displayed on my website"""
 
         summary = query_llama(summary_prompt)
         if not summary:
